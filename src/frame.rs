@@ -61,6 +61,9 @@ pub struct Frame {
 
     // Frame velocity
     global_v: Matrix4d,
+
+    // Lazily recompute derivative/inverse caches when requested.
+    local_differentials_valid: bool,
 }
 
 impl Frame {
@@ -145,33 +148,110 @@ impl Frame {
     #[inline(always)]
     fn update_global(
         local_w: &Matrix4d,
-        local_z: &Matrix4d,
         parent_global_w: &Matrix4d,
         parent_global_v: &Matrix4d,
         q_dot: f64,
+        coordinate_type: CoordinateType,
     ) -> (Matrix4d, Matrix4d) {
         let global_w = Self::mul_transform(parent_global_w, local_w);
         let mut global_v = Self::similarity_twist(local_w, parent_global_v);
-        for i in 0..4 {
-            for j in 0..4 {
-                global_v[(i, j)] += local_z[(i, j)] * q_dot;
+        match coordinate_type {
+            CoordinateType::None => {}
+            CoordinateType::XTran => global_v[(0, 3)] += q_dot,
+            CoordinateType::YTran => global_v[(1, 3)] += q_dot,
+            CoordinateType::ZTran => global_v[(2, 3)] += q_dot,
+            CoordinateType::XRot => {
+                global_v[(1, 2)] -= q_dot;
+                global_v[(2, 1)] += q_dot;
+            }
+            CoordinateType::YRot => {
+                global_v[(0, 2)] += q_dot;
+                global_v[(2, 0)] -= q_dot;
+            }
+            CoordinateType::ZRot => {
+                global_v[(0, 1)] -= q_dot;
+                global_v[(1, 0)] += q_dot;
             }
         }
         (global_w, global_v)
     }
 
+    #[inline(always)]
+    fn update_local_fast_in_place(frame: &mut Frame) {
+        let q = frame.coordinate_value[0];
+        match frame.coordinate_type {
+            CoordinateType::None => {
+                frame.local_w = Matrix4d::identity();
+            }
+            CoordinateType::XTran => {
+                let mut local_w = Matrix4d::identity();
+                local_w[(0, 3)] = q;
+                frame.local_w = local_w;
+            }
+            CoordinateType::YTran => {
+                let mut local_w = Matrix4d::identity();
+                local_w[(1, 3)] = q;
+                frame.local_w = local_w;
+            }
+            CoordinateType::ZTran => {
+                let mut local_w = Matrix4d::identity();
+                local_w[(2, 3)] = q;
+                frame.local_w = local_w;
+            }
+            CoordinateType::XRot => {
+                let (sq, cq) = q.sin_cos();
+                let mut local_w = Matrix4d::identity();
+                local_w[(1, 1)] = cq;
+                local_w[(1, 2)] = -sq;
+                local_w[(2, 1)] = sq;
+                local_w[(2, 2)] = cq;
+                frame.local_w = local_w;
+            }
+            CoordinateType::YRot => {
+                let (sq, cq) = q.sin_cos();
+                let mut local_w = Matrix4d::identity();
+                local_w[(0, 0)] = cq;
+                local_w[(0, 2)] = sq;
+                local_w[(2, 0)] = -sq;
+                local_w[(2, 2)] = cq;
+                frame.local_w = local_w;
+            }
+            CoordinateType::ZRot => {
+                let (sq, cq) = q.sin_cos();
+                let mut local_w = Matrix4d::identity();
+                local_w[(0, 0)] = cq;
+                local_w[(0, 1)] = -sq;
+                local_w[(1, 0)] = sq;
+                local_w[(1, 1)] = cq;
+                frame.local_w = local_w;
+            }
+        }
+        frame.local_differentials_valid = false;
+    }
+
+    fn ensure_local_differentials(this: &FrameRef) {
+        if this.borrow().local_differentials_valid {
+            return;
+        }
+        let mut frame = this.borrow_mut();
+        if frame.local_differentials_valid {
+            return;
+        }
+        Self::update_local_in_place(&mut frame);
+    }
+
     fn update_with_parent(this: &FrameRef, parent_global_w: Matrix4d, parent_global_v: Matrix4d) {
         let (children, global_w, global_v) = {
             let mut frame = this.borrow_mut();
-            Self::update_local_in_place(&mut frame);
+            Self::update_local_fast_in_place(&mut frame);
             let q_dot = frame.coordinate_value[1];
             (frame.global_w, frame.global_v) = Self::update_global(
                 &frame.local_w,
-                &frame.local_z,
                 &parent_global_w,
                 &parent_global_v,
-                    q_dot,
-                );
+                q_dot,
+                frame.coordinate_type,
+            );
             (frame.children.clone(), frame.global_w, frame.global_v)
         };
 
@@ -201,6 +281,7 @@ impl Frame {
             local_ddw_inv: Matrix4d::zeros(),
             local_z: Matrix4d::zeros(),
             global_v: Matrix4d::zeros(),
+            local_differentials_valid: false,
         }));
 
         Self::update(&frame);
@@ -227,14 +308,14 @@ impl Frame {
 
             let (children, global_w, global_v) = {
                 let mut frame = this.borrow_mut();
-                Self::update_local_in_place(&mut frame);
+                Self::update_local_fast_in_place(&mut frame);
                 let q_dot = frame.coordinate_value[1];
                 (frame.global_w, frame.global_v) = Self::update_global(
                     &frame.local_w,
-                    &frame.local_z,
                     &parent_global_w,
                     &parent_global_v,
                     q_dot,
+                    frame.coordinate_type,
                 );
                 (frame.children.clone(), frame.global_w, frame.global_v)
             };
@@ -245,7 +326,7 @@ impl Frame {
         } else {
             let (children, local_w, global_v_zero) = {
                 let mut frame = this.borrow_mut();
-                Self::update_local_in_place(&mut frame);
+                Self::update_local_fast_in_place(&mut frame);
                 frame.global_w = frame.local_w;
                 frame.global_v = Matrix4d::zeros();
                 (frame.children.clone(), frame.local_w, frame.global_v)
@@ -488,10 +569,12 @@ impl Frame {
             frame.local_dw_inv = dw_inv;
             frame.local_ddw_inv = ddw_inv;
         }
+        frame.local_differentials_valid = true;
     }
 
     /// Transformation: first partial with respect to q in global coordinates.
     pub fn partial_w(this: &FrameRef, i_frame: &FrameRef) -> Matrix4d {
+        Self::ensure_local_differentials(this);
         if let Some(parent_frame) = Self::parent_frame(this) {
             if Rc::ptr_eq(this, i_frame) {
                 parent_frame.borrow().global_w * this.borrow().local_dw
@@ -505,6 +588,7 @@ impl Frame {
 
     /// Transformation: second partial with respect to q in global coordinates.
     pub fn partial2_w(this: &FrameRef, i_frame: &FrameRef, j_frame: &FrameRef) -> Matrix4d {
+        Self::ensure_local_differentials(this);
         if let Some(parent_frame) = Self::parent_frame(this) {
             let is_i = Rc::ptr_eq(this, i_frame);
             let is_j = Rc::ptr_eq(this, j_frame);
@@ -525,6 +609,7 @@ impl Frame {
 
     /// Rigid body velocity: first partial with respect to q.
     pub fn partial_v(this: &FrameRef, i_frame: &FrameRef) -> Matrix4d {
+        Self::ensure_local_differentials(this);
         if let Some(parent_frame) = Self::parent_frame(this) {
             let frame = this.borrow();
 
@@ -541,6 +626,7 @@ impl Frame {
 
     /// Rigid body velocity: second partial with respect to q.
     pub fn partial2_v(this: &FrameRef, i_frame: &FrameRef, j_frame: &FrameRef) -> Matrix4d {
+        Self::ensure_local_differentials(this);
         if let Some(parent_frame) = Self::parent_frame(this) {
             let is_i = Rc::ptr_eq(this, i_frame);
             let is_j = Rc::ptr_eq(this, j_frame);
@@ -566,6 +652,7 @@ impl Frame {
 
     /// Rigid body velocity: first partial with respect to q_dot.
     pub fn partial_vd(this: &FrameRef, i_frame: &FrameRef) -> Matrix4d {
+        Self::ensure_local_differentials(this);
         if let Some(parent_frame) = Self::parent_frame(this) {
             let frame = this.borrow();
 
@@ -586,6 +673,7 @@ impl Frame {
 
     /// Rigid body velocity: mixed partial with respect to q and q_dot.
     pub fn partial_v_mixed(this: &FrameRef, qdot_frame: &FrameRef, q_frame: &FrameRef) -> Matrix4d {
+        Self::ensure_local_differentials(this);
         if let Some(parent_frame) = Self::parent_frame(this) {
             let frame = this.borrow();
 
@@ -621,10 +709,12 @@ impl Frame {
     }
 
     pub fn local_dw(this: &FrameRef) -> Matrix4d {
+        Self::ensure_local_differentials(this);
         this.borrow().local_dw
     }
 
     pub fn local_ddw(this: &FrameRef) -> Matrix4d {
+        Self::ensure_local_differentials(this);
         this.borrow().local_ddw
     }
 
@@ -633,14 +723,17 @@ impl Frame {
     }
 
     pub fn local_dw_inv(this: &FrameRef) -> Matrix4d {
+        Self::ensure_local_differentials(this);
         this.borrow().local_dw_inv
     }
 
     pub fn local_ddw_inv(this: &FrameRef) -> Matrix4d {
+        Self::ensure_local_differentials(this);
         this.borrow().local_ddw_inv
     }
 
     pub fn local_z(this: &FrameRef) -> Matrix4d {
+        Self::ensure_local_differentials(this);
         this.borrow().local_z
     }
 }
