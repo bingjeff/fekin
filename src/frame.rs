@@ -64,6 +64,47 @@ pub struct Frame {
 }
 
 impl Frame {
+    #[inline(always)]
+    fn z_xrot() -> Matrix4d {
+        let mut z = Matrix4d::zeros();
+        z[(1, 2)] = -1.0;
+        z[(2, 1)] = 1.0;
+        z
+    }
+
+    #[inline(always)]
+    fn z_yrot() -> Matrix4d {
+        let mut z = Matrix4d::zeros();
+        z[(0, 2)] = 1.0;
+        z[(2, 0)] = -1.0;
+        z
+    }
+
+    #[inline(always)]
+    fn z_zrot() -> Matrix4d {
+        let mut z = Matrix4d::zeros();
+        z[(0, 1)] = -1.0;
+        z[(1, 0)] = 1.0;
+        z
+    }
+
+    fn update_with_parent(this: &FrameRef, parent_global_w: Matrix4d, parent_global_v: Matrix4d) {
+        Self::update_local(this);
+
+        let (global_w, global_v) = {
+            let mut frame = this.borrow_mut();
+            let q_dot = frame.coordinate_value[1];
+            frame.global_w = parent_global_w * frame.local_w;
+            frame.global_v = frame.local_w_inv * parent_global_v * frame.local_w + frame.local_z * q_dot;
+            (frame.global_w, frame.global_v)
+        };
+
+        let children = this.borrow().children.clone();
+        for child in children {
+            Self::update_with_parent(&child, global_w, global_v);
+        }
+    }
+
     pub fn new(
         parent_frame: Option<&FrameRef>,
         coordinate_value: [f64; 2],
@@ -106,35 +147,35 @@ impl Frame {
         Self::update_local(this);
 
         if let Some(parent_frame) = Self::parent_frame(this) {
-            let parent_global_w = parent_frame.borrow().global_w;
-            let parent_global_v = parent_frame.borrow().global_v;
+            let parent = parent_frame.borrow();
+            let parent_global_w = parent.global_w;
+            let parent_global_v = parent.global_v;
+            drop(parent);
 
-            let (local_w, local_w_inv, local_z, q_dot) = {
-                let frame = this.borrow();
-                (
-                    frame.local_w,
-                    frame.local_w_inv,
-                    frame.local_z,
-                    frame.coordinate_value[1],
-                )
+            let (global_w, global_v) = {
+                let mut frame = this.borrow_mut();
+                let q_dot = frame.coordinate_value[1];
+                frame.global_w = parent_global_w * frame.local_w;
+                frame.global_v = frame.local_w_inv * parent_global_v * frame.local_w + frame.local_z * q_dot;
+                (frame.global_w, frame.global_v)
             };
 
-            let global_w = parent_global_w * local_w;
-            let global_v = local_w_inv * parent_global_v * local_w + local_z * q_dot;
-
-            let mut frame = this.borrow_mut();
-            frame.global_w = global_w;
-            frame.global_v = global_v;
+            let children = this.borrow().children.clone();
+            for child in children {
+                Self::update_with_parent(&child, global_w, global_v);
+            }
         } else {
             let local_w = this.borrow().local_w;
-            let mut frame = this.borrow_mut();
-            frame.global_w = local_w;
-            frame.global_v = Matrix4d::zeros();
-        }
+            {
+                let mut frame = this.borrow_mut();
+                frame.global_w = local_w;
+                frame.global_v = Matrix4d::zeros();
+            }
 
-        let children = this.borrow().children.clone();
-        for child in children {
-            Self::update(&child);
+            let children = this.borrow().children.clone();
+            for child in children {
+                Self::update_with_parent(&child, local_w, Matrix4d::zeros());
+            }
         }
     }
 
@@ -261,7 +302,7 @@ impl Frame {
                 ddw_inv[(2, 1)] = sq;
                 ddw_inv[(2, 2)] = -cq;
 
-                let z = w.transpose() * dw;
+                let z = Self::z_xrot();
                 (w, dw, ddw, w_inv, dw_inv, ddw_inv, z)
             }
 
@@ -306,7 +347,7 @@ impl Frame {
                 ddw_inv[(2, 0)] = -sq;
                 ddw_inv[(2, 2)] = -cq;
 
-                let z = w.transpose() * dw;
+                let z = Self::z_yrot();
                 (w, dw, ddw, w_inv, dw_inv, ddw_inv, z)
             }
 
@@ -351,7 +392,7 @@ impl Frame {
                 ddw_inv[(1, 0)] = sq;
                 ddw_inv[(1, 1)] = -cq;
 
-                let z = w.transpose() * dw;
+                let z = Self::z_zrot();
                 (w, dw, ddw, w_inv, dw_inv, ddw_inv, z)
             }
         };
