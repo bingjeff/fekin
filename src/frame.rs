@@ -248,23 +248,27 @@ impl Frame {
 
     unsafe fn update_with_parent_raw(
         frame_ptr: *mut Frame,
-        parent_global_w: Matrix4d,
-        parent_global_v: Matrix4d,
+        parent_global_w: *const Matrix4d,
+        parent_global_v: *const Matrix4d,
     ) {
         // SAFETY: The caller guarantees `frame_ptr` is valid for exclusive update traversal.
         let frame = unsafe { &mut *frame_ptr };
+        // SAFETY: Parent pointers come from live ancestor frames during traversal.
+        let parent_global_w = unsafe { &*parent_global_w };
+        // SAFETY: Parent pointers come from live ancestor frames during traversal.
+        let parent_global_v = unsafe { &*parent_global_v };
         Self::update_local_fast_in_place(frame);
         let q_dot = frame.coordinate_value[1];
         (frame.global_w, frame.global_v) = Self::update_global(
             &frame.local_w,
-            &parent_global_w,
-            &parent_global_v,
+            parent_global_w,
+            parent_global_v,
             q_dot,
             frame.coordinate_type,
         );
 
-        let global_w = frame.global_w;
-        let global_v = frame.global_v;
+        let global_w = &frame.global_w as *const Matrix4d;
+        let global_v = &frame.global_v as *const Matrix4d;
         let children_ptr = frame.children.as_ptr();
         let child_count = frame.children.len();
 
@@ -287,8 +291,8 @@ impl Frame {
         root.global_w = root.local_w;
         root.global_v = Matrix4d::zeros();
 
-        let root_global_w = root.global_w;
-        let root_global_v = root.global_v;
+        let root_global_w = &root.global_w as *const Matrix4d;
+        let root_global_v = &root.global_v as *const Matrix4d;
         let children_ptr = root.children.as_ptr();
         let child_count = root.children.len();
 
