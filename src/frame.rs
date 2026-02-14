@@ -240,6 +240,68 @@ impl Frame {
         Self::update_local_in_place(&mut frame);
     }
 
+    #[inline(always)]
+    unsafe fn frame_ptr_from_ref(frame_ref: &FrameRef) -> *mut Frame {
+        // SAFETY: `Rc::as_ptr` yields a stable pointer to the owned `RefCell<Frame>`.
+        unsafe { (*Rc::as_ptr(frame_ref)).as_ptr() }
+    }
+
+    unsafe fn update_with_parent_raw(
+        frame_ptr: *mut Frame,
+        parent_global_w: Matrix4d,
+        parent_global_v: Matrix4d,
+    ) {
+        // SAFETY: The caller guarantees `frame_ptr` is valid for exclusive update traversal.
+        let frame = unsafe { &mut *frame_ptr };
+        Self::update_local_fast_in_place(frame);
+        let q_dot = frame.coordinate_value[1];
+        (frame.global_w, frame.global_v) = Self::update_global(
+            &frame.local_w,
+            &parent_global_w,
+            &parent_global_v,
+            q_dot,
+            frame.coordinate_type,
+        );
+
+        let global_w = frame.global_w;
+        let global_v = frame.global_v;
+        let children_ptr = frame.children.as_ptr();
+        let child_count = frame.children.len();
+
+        for i in 0..child_count {
+            // SAFETY: child index is in-bounds and children vec is not mutated during traversal.
+            let child_ref = unsafe { &*children_ptr.add(i) };
+            // SAFETY: recursive traversal keeps each node update single-threaded and exclusive.
+            let child_ptr = unsafe { Self::frame_ptr_from_ref(child_ref) };
+            // SAFETY: same traversal guarantees as above.
+            unsafe { Self::update_with_parent_raw(child_ptr, global_w, global_v) };
+        }
+    }
+
+    unsafe fn update_root_raw(this: &FrameRef) {
+        // SAFETY: root pointer is valid for the duration of update traversal.
+        let root_ptr = unsafe { Self::frame_ptr_from_ref(this) };
+        // SAFETY: traversal performs exclusive mutable updates.
+        let root = unsafe { &mut *root_ptr };
+        Self::update_local_fast_in_place(root);
+        root.global_w = root.local_w;
+        root.global_v = Matrix4d::zeros();
+
+        let root_global_w = root.global_w;
+        let root_global_v = root.global_v;
+        let children_ptr = root.children.as_ptr();
+        let child_count = root.children.len();
+
+        for i in 0..child_count {
+            // SAFETY: child index is in-bounds and children vec is not mutated during traversal.
+            let child_ref = unsafe { &*children_ptr.add(i) };
+            // SAFETY: child pointer originates from valid `Rc<RefCell<Frame>>`.
+            let child_ptr = unsafe { Self::frame_ptr_from_ref(child_ref) };
+            // SAFETY: same traversal guarantees as above.
+            unsafe { Self::update_with_parent_raw(child_ptr, root_global_w, root_global_v) };
+        }
+    }
+
     fn update_with_parent(this: &FrameRef, parent_global_w: Matrix4d, parent_global_v: Matrix4d) {
         let (children, global_w, global_v) = {
             let mut frame = this.borrow_mut();
@@ -300,6 +362,12 @@ impl Frame {
     /// Update all cached matrices and their children. For best effect,
     /// only call this function from the "spatial frame" (the root frame).
     pub fn update(this: &FrameRef) {
+        if Self::parent_frame(this).is_none() {
+            // SAFETY: root traversal is single-threaded and exclusively mutates cached fields.
+            unsafe { Self::update_root_raw(this) };
+            return;
+        }
+
         if let Some(parent_frame) = Self::parent_frame(this) {
             let parent = parent_frame.borrow();
             let parent_global_w = parent.global_w;
