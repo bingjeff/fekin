@@ -181,6 +181,152 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Matrix4d;
+
+    const GOLDEN_LOCAL_W: [f64; 16] = [
+        -0.5677006028406701,
+        -0.823235097365473,
+        0.0,
+        0.0,
+        0.823235097365473,
+        -0.5677006028406701,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ];
+    const GOLDEN_GLOBAL_W: [f64; 16] = [
+        0.5386040182396854,
+        0.13631898784789567,
+        0.831458264189003,
+        1.0440040887163375,
+        -0.7710173896467427,
+        0.47767911877483693,
+        0.42113518536073213,
+        0.39731520254078867,
+        -0.3397615287203476,
+        -0.8678938835126219,
+        0.36238420297108975,
+        3.228048762896403,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ];
+    const GOLDEN_LOCAL_DW: [f64; 16] = [
+        -0.823235097365473,
+        0.5677006028406701,
+        0.0,
+        0.0,
+        -0.5677006028406701,
+        -0.823235097365473,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ];
+    const GOLDEN_LOCAL_DDW: [f64; 16] = [
+        0.5677006028406701,
+        0.823235097365473,
+        0.0,
+        0.0,
+        -0.823235097365473,
+        0.5677006028406701,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ];
+    const GOLDEN_GLOBAL_V: [f64; 16] = [
+        -6.938893903907228e-18,
+        0.012664640408229164,
+        0.09266983177147843,
+        -0.1451634985620628,
+        -0.012664640408229164,
+        -6.938893903907228e-18,
+        -0.11407064581087706,
+        -0.12982778452734112,
+        -0.09266983177147843,
+        0.11407064581087706,
+        0.0,
+        -0.06700177474701621,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ];
+
+    struct DistalSnapshot {
+        local_w: Matrix4d,
+        global_w: Matrix4d,
+        local_dw: Matrix4d,
+        local_ddw: Matrix4d,
+        global_v: Matrix4d,
+    }
+
+    fn matrix_from_array_row_major(values: &[f64; 16]) -> Matrix4d {
+        Matrix4d::from_row_slice(values)
+    }
+
+    fn matrix_to_array_row_major(matrix: &Matrix4d) -> [f64; 16] {
+        let mut out = [0.0; 16];
+        let mut k = 0usize;
+        for i in 0..4 {
+            for j in 0..4 {
+                out[k] = matrix[(i, j)];
+                k += 1;
+            }
+        }
+        out
+    }
+
+    fn assert_matrix_close(a: &Matrix4d, b: &Matrix4d) {
+        let tol = 1.0e-12;
+        for i in 0..4 {
+            for j in 0..4 {
+                let diff = (a[(i, j)] - b[(i, j)]).abs();
+                assert!(diff <= tol, "matrix mismatch at ({i}, {j}): {diff}");
+            }
+        }
+    }
+
+    fn capture_final_distal_snapshot(loop_count: usize) -> DistalSnapshot {
+        let (world_frame, bench_nodes) =
+            build_benchmark_tree(TREE_DEPTH, BRANCHES_PER_DEPTH, NODES_PER_BRANCH);
+
+        let _samples_us = run_update_benchmark(&world_frame, &bench_nodes, loop_count);
+
+        let distal_frame = &bench_nodes
+            .last()
+            .expect("benchmark tree should include at least one non-root node")
+            .frame;
+
+        DistalSnapshot {
+            local_w: Frame::local_w(distal_frame),
+            global_w: Frame::global_w(distal_frame),
+            local_dw: Frame::local_dw(distal_frame),
+            local_ddw: Frame::local_ddw(distal_frame),
+            global_v: Frame::global_v(distal_frame),
+        }
+    }
 
     fn expected_nodes(depth: usize, branches_per_depth: usize, nodes_per_branch: usize) -> usize {
         let mut total = 1usize;
@@ -210,5 +356,39 @@ mod tests {
         assert!((stats.stddev_us - 8.164_965_809_277_26).abs() < 1.0e-12);
         assert!((stats.max_us - 30.0).abs() < 1.0e-12);
         assert!((stats.total_ms - 0.06).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn distal_node_state_matches_across_runs_at_final_iteration() {
+        let run_a = capture_final_distal_snapshot(NUM_LOOP_ITERATIONS);
+        let run_b = capture_final_distal_snapshot(NUM_LOOP_ITERATIONS);
+
+        assert_matrix_close(&run_a.local_w, &run_b.local_w);
+        assert_matrix_close(&run_a.global_w, &run_b.global_w);
+        assert_matrix_close(&run_a.local_dw, &run_b.local_dw);
+        assert_matrix_close(&run_a.local_ddw, &run_b.local_ddw);
+        assert_matrix_close(&run_a.global_v, &run_b.global_v);
+    }
+
+    #[test]
+    fn distal_node_state_matches_golden_snapshot_at_final_iteration() {
+        let run = capture_final_distal_snapshot(NUM_LOOP_ITERATIONS);
+
+        assert_matrix_close(&run.local_w, &matrix_from_array_row_major(&GOLDEN_LOCAL_W));
+        assert_matrix_close(&run.global_w, &matrix_from_array_row_major(&GOLDEN_GLOBAL_W));
+        assert_matrix_close(&run.local_dw, &matrix_from_array_row_major(&GOLDEN_LOCAL_DW));
+        assert_matrix_close(&run.local_ddw, &matrix_from_array_row_major(&GOLDEN_LOCAL_DDW));
+        assert_matrix_close(&run.global_v, &matrix_from_array_row_major(&GOLDEN_GLOBAL_V));
+    }
+
+    #[test]
+    #[ignore = "used only when refreshing the benchmark golden snapshot"]
+    fn print_distal_snapshot_for_golden_refresh() {
+        let run = capture_final_distal_snapshot(NUM_LOOP_ITERATIONS);
+        println!("local_w   = {:?}", matrix_to_array_row_major(&run.local_w));
+        println!("global_w  = {:?}", matrix_to_array_row_major(&run.global_w));
+        println!("local_dw  = {:?}", matrix_to_array_row_major(&run.local_dw));
+        println!("local_ddw = {:?}", matrix_to_array_row_major(&run.local_ddw));
+        println!("global_v  = {:?}", matrix_to_array_row_major(&run.global_v));
     }
 }

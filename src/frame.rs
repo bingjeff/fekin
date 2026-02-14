@@ -512,6 +512,10 @@ impl Frame {
         this.borrow().local_ddw
     }
 
+    pub fn global_v(this: &FrameRef) -> Matrix4d {
+        this.borrow().global_v
+    }
+
     pub fn local_dw_inv(this: &FrameRef) -> Matrix4d {
         this.borrow().local_dw_inv
     }
