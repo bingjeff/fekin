@@ -40,6 +40,8 @@ pub struct Frame {
     coordinate_value: [f64; 2],
     coordinate_type: CoordinateType,
     is_fixed: bool,
+    q_sin: f64,
+    q_cos: f64,
 
     // Transformation matrix
     local_w: Matrix4d,
@@ -61,6 +63,7 @@ pub struct Frame {
 
     // Frame velocity
     global_v: Matrix4d,
+    global_cache_valid: bool,
 
     // Lazily recompute derivative/inverse caches when requested.
     local_differentials_valid: bool,
@@ -177,7 +180,7 @@ impl Frame {
     }
 
     #[inline(always)]
-    fn update_local_fast_in_place(frame: &mut Frame) {
+    fn recompute_local_pose_in_place(frame: &mut Frame) {
         let q = frame.coordinate_value[0];
         match frame.coordinate_type {
             CoordinateType::None => {
@@ -199,7 +202,8 @@ impl Frame {
                 frame.local_w = local_w;
             }
             CoordinateType::XRot => {
-                let (sq, cq) = q.sin_cos();
+                let sq = frame.q_sin;
+                let cq = frame.q_cos;
                 let mut local_w = Matrix4d::identity();
                 local_w[(1, 1)] = cq;
                 local_w[(1, 2)] = -sq;
@@ -208,7 +212,8 @@ impl Frame {
                 frame.local_w = local_w;
             }
             CoordinateType::YRot => {
-                let (sq, cq) = q.sin_cos();
+                let sq = frame.q_sin;
+                let cq = frame.q_cos;
                 let mut local_w = Matrix4d::identity();
                 local_w[(0, 0)] = cq;
                 local_w[(0, 2)] = sq;
@@ -217,7 +222,8 @@ impl Frame {
                 frame.local_w = local_w;
             }
             CoordinateType::ZRot => {
-                let (sq, cq) = q.sin_cos();
+                let sq = frame.q_sin;
+                let cq = frame.q_cos;
                 let mut local_w = Matrix4d::identity();
                 local_w[(0, 0)] = cq;
                 local_w[(0, 1)] = -sq;
@@ -226,7 +232,6 @@ impl Frame {
                 frame.local_w = local_w;
             }
         }
-        frame.local_differentials_valid = false;
     }
 
     fn ensure_local_differentials(this: &FrameRef) {
@@ -240,45 +245,55 @@ impl Frame {
         Self::update_local_in_place(&mut frame);
     }
 
+    fn ensure_global_cache(this: &FrameRef) {
+        if this.borrow().global_cache_valid {
+            return;
+        }
+
+        if let Some(parent_frame) = Self::parent_frame(this) {
+            Self::ensure_global_cache(&parent_frame);
+            let parent = parent_frame.borrow();
+            let parent_global_w = parent.global_w;
+            let parent_global_v = parent.global_v;
+            drop(parent);
+
+            let mut frame = this.borrow_mut();
+            let q_dot = frame.coordinate_value[1];
+            (frame.global_w, frame.global_v) = Self::update_global(
+                &frame.local_w,
+                &parent_global_w,
+                &parent_global_v,
+                q_dot,
+                frame.coordinate_type,
+            );
+            frame.global_cache_valid = true;
+        } else {
+            let mut frame = this.borrow_mut();
+            frame.global_w = frame.local_w;
+            frame.global_v = Matrix4d::zeros();
+            frame.global_cache_valid = true;
+        }
+    }
+
     #[inline(always)]
     unsafe fn frame_ptr_from_ref(frame_ref: &FrameRef) -> *mut Frame {
         // SAFETY: `Rc::as_ptr` yields a stable pointer to the owned `RefCell<Frame>`.
         unsafe { (*Rc::as_ptr(frame_ref)).as_ptr() }
     }
 
-    unsafe fn update_with_parent_raw(
-        frame_ptr: *mut Frame,
-        parent_global_w: *const Matrix4d,
-        parent_global_v: *const Matrix4d,
-    ) {
-        // SAFETY: The caller guarantees `frame_ptr` is valid for exclusive update traversal.
+    unsafe fn invalidate_subtree_global_cache(frame_ptr: *mut Frame) {
+        // SAFETY: The caller guarantees `frame_ptr` is valid for traversal.
         let frame = unsafe { &mut *frame_ptr };
-        // SAFETY: Parent pointers come from live ancestor frames during traversal.
-        let parent_global_w = unsafe { &*parent_global_w };
-        // SAFETY: Parent pointers come from live ancestor frames during traversal.
-        let parent_global_v = unsafe { &*parent_global_v };
-        Self::update_local_fast_in_place(frame);
-        let q_dot = frame.coordinate_value[1];
-        (frame.global_w, frame.global_v) = Self::update_global(
-            &frame.local_w,
-            parent_global_w,
-            parent_global_v,
-            q_dot,
-            frame.coordinate_type,
-        );
-
-        let global_w = &frame.global_w as *const Matrix4d;
-        let global_v = &frame.global_v as *const Matrix4d;
+        frame.global_cache_valid = false;
         let children_ptr = frame.children.as_ptr();
         let child_count = frame.children.len();
-
         for i in 0..child_count {
             // SAFETY: child index is in-bounds and children vec is not mutated during traversal.
             let child_ref = unsafe { &*children_ptr.add(i) };
             // SAFETY: recursive traversal keeps each node update single-threaded and exclusive.
             let child_ptr = unsafe { Self::frame_ptr_from_ref(child_ref) };
             // SAFETY: same traversal guarantees as above.
-            unsafe { Self::update_with_parent_raw(child_ptr, global_w, global_v) };
+            unsafe { Self::invalidate_subtree_global_cache(child_ptr) };
         }
     }
 
@@ -287,12 +302,10 @@ impl Frame {
         let root_ptr = unsafe { Self::frame_ptr_from_ref(this) };
         // SAFETY: traversal performs exclusive mutable updates.
         let root = unsafe { &mut *root_ptr };
-        Self::update_local_fast_in_place(root);
         root.global_w = root.local_w;
         root.global_v = Matrix4d::zeros();
+        root.global_cache_valid = true;
 
-        let root_global_w = &root.global_w as *const Matrix4d;
-        let root_global_v = &root.global_v as *const Matrix4d;
         let children_ptr = root.children.as_ptr();
         let child_count = root.children.len();
 
@@ -302,14 +315,13 @@ impl Frame {
             // SAFETY: child pointer originates from valid `Rc<RefCell<Frame>>`.
             let child_ptr = unsafe { Self::frame_ptr_from_ref(child_ref) };
             // SAFETY: same traversal guarantees as above.
-            unsafe { Self::update_with_parent_raw(child_ptr, root_global_w, root_global_v) };
+            unsafe { Self::invalidate_subtree_global_cache(child_ptr) };
         }
     }
 
     fn update_with_parent(this: &FrameRef, parent_global_w: Matrix4d, parent_global_v: Matrix4d) {
         let (children, global_w, global_v) = {
             let mut frame = this.borrow_mut();
-            Self::update_local_fast_in_place(&mut frame);
             let q_dot = frame.coordinate_value[1];
             (frame.global_w, frame.global_v) = Self::update_global(
                 &frame.local_w,
@@ -318,6 +330,7 @@ impl Frame {
                 q_dot,
                 frame.coordinate_type,
             );
+            frame.global_cache_valid = true;
             (frame.children.clone(), frame.global_w, frame.global_v)
         };
 
@@ -338,6 +351,8 @@ impl Frame {
             coordinate_value,
             coordinate_type,
             is_fixed: is_coordinate_fixed,
+            q_sin: coordinate_value[0].sin(),
+            q_cos: coordinate_value[0].cos(),
             local_w: Matrix4d::zeros(),
             global_w: Matrix4d::zeros(),
             local_dw: Matrix4d::zeros(),
@@ -347,8 +362,13 @@ impl Frame {
             local_ddw_inv: Matrix4d::zeros(),
             local_z: Matrix4d::zeros(),
             global_v: Matrix4d::zeros(),
+            global_cache_valid: false,
             local_differentials_valid: false,
         }));
+        {
+            let mut frame_mut = frame.borrow_mut();
+            Self::recompute_local_pose_in_place(&mut frame_mut);
+        }
 
         Self::update(&frame);
 
@@ -380,7 +400,6 @@ impl Frame {
 
             let (children, global_w, global_v) = {
                 let mut frame = this.borrow_mut();
-                Self::update_local_fast_in_place(&mut frame);
                 let q_dot = frame.coordinate_value[1];
                 (frame.global_w, frame.global_v) = Self::update_global(
                     &frame.local_w,
@@ -389,6 +408,7 @@ impl Frame {
                     q_dot,
                     frame.coordinate_type,
                 );
+                frame.global_cache_valid = true;
                 (frame.children.clone(), frame.global_w, frame.global_v)
             };
 
@@ -398,9 +418,9 @@ impl Frame {
         } else {
             let (children, local_w, global_v_zero) = {
                 let mut frame = this.borrow_mut();
-                Self::update_local_fast_in_place(&mut frame);
                 frame.global_w = frame.local_w;
                 frame.global_v = Matrix4d::zeros();
+                frame.global_cache_valid = true;
                 (frame.children.clone(), frame.local_w, frame.global_v)
             };
 
@@ -646,6 +666,7 @@ impl Frame {
 
     /// Transformation: first partial with respect to q in global coordinates.
     pub fn partial_w(this: &FrameRef, i_frame: &FrameRef) -> Matrix4d {
+        Self::ensure_global_cache(this);
         Self::ensure_local_differentials(this);
         if let Some(parent_frame) = Self::parent_frame(this) {
             if Rc::ptr_eq(this, i_frame) {
@@ -660,6 +681,7 @@ impl Frame {
 
     /// Transformation: second partial with respect to q in global coordinates.
     pub fn partial2_w(this: &FrameRef, i_frame: &FrameRef, j_frame: &FrameRef) -> Matrix4d {
+        Self::ensure_global_cache(this);
         Self::ensure_local_differentials(this);
         if let Some(parent_frame) = Self::parent_frame(this) {
             let is_i = Rc::ptr_eq(this, i_frame);
@@ -681,6 +703,7 @@ impl Frame {
 
     /// Rigid body velocity: first partial with respect to q.
     pub fn partial_v(this: &FrameRef, i_frame: &FrameRef) -> Matrix4d {
+        Self::ensure_global_cache(this);
         Self::ensure_local_differentials(this);
         if let Some(parent_frame) = Self::parent_frame(this) {
             let frame = this.borrow();
@@ -698,6 +721,7 @@ impl Frame {
 
     /// Rigid body velocity: second partial with respect to q.
     pub fn partial2_v(this: &FrameRef, i_frame: &FrameRef, j_frame: &FrameRef) -> Matrix4d {
+        Self::ensure_global_cache(this);
         Self::ensure_local_differentials(this);
         if let Some(parent_frame) = Self::parent_frame(this) {
             let is_i = Rc::ptr_eq(this, i_frame);
@@ -724,6 +748,7 @@ impl Frame {
 
     /// Rigid body velocity: first partial with respect to q_dot.
     pub fn partial_vd(this: &FrameRef, i_frame: &FrameRef) -> Matrix4d {
+        Self::ensure_global_cache(this);
         Self::ensure_local_differentials(this);
         if let Some(parent_frame) = Self::parent_frame(this) {
             let frame = this.borrow();
@@ -745,6 +770,7 @@ impl Frame {
 
     /// Rigid body velocity: mixed partial with respect to q and q_dot.
     pub fn partial_v_mixed(this: &FrameRef, qdot_frame: &FrameRef, q_frame: &FrameRef) -> Matrix4d {
+        Self::ensure_global_cache(this);
         Self::ensure_local_differentials(this);
         if let Some(parent_frame) = Self::parent_frame(this) {
             let frame = this.borrow();
@@ -769,7 +795,14 @@ impl Frame {
     }
 
     pub fn set_coordinate_value(this: &FrameRef, coordinate_value: [f64; 2]) {
-        this.borrow_mut().coordinate_value = coordinate_value;
+        let (q_sin, q_cos) = coordinate_value[0].sin_cos();
+        let mut frame = this.borrow_mut();
+        frame.coordinate_value = coordinate_value;
+        frame.q_sin = q_sin;
+        frame.q_cos = q_cos;
+        Self::recompute_local_pose_in_place(&mut frame);
+        frame.global_cache_valid = false;
+        frame.local_differentials_valid = false;
     }
 
     pub fn local_w(this: &FrameRef) -> Matrix4d {
@@ -777,6 +810,7 @@ impl Frame {
     }
 
     pub fn global_w(this: &FrameRef) -> Matrix4d {
+        Self::ensure_global_cache(this);
         this.borrow().global_w
     }
 
@@ -791,6 +825,7 @@ impl Frame {
     }
 
     pub fn global_v(this: &FrameRef) -> Matrix4d {
+        Self::ensure_global_cache(this);
         this.borrow().global_v
     }
 

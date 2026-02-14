@@ -9,7 +9,7 @@ nalgebra = "0.33"
 [profile.dev]
 opt-level = 3
 codegen-units = 1
-lto = "thin"
+lto = false
 debug = 0
 debug-assertions = false
 overflow-checks = false
