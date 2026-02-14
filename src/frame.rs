@@ -161,22 +161,20 @@ impl Frame {
     }
 
     fn update_with_parent(this: &FrameRef, parent_global_w: Matrix4d, parent_global_v: Matrix4d) {
-        Self::update_local(this);
-
-        let (global_w, global_v) = {
+        let (children, global_w, global_v) = {
             let mut frame = this.borrow_mut();
+            Self::update_local_in_place(&mut frame);
             let q_dot = frame.coordinate_value[1];
             (frame.global_w, frame.global_v) = Self::update_global(
                 &frame.local_w,
                 &frame.local_z,
                 &parent_global_w,
                 &parent_global_v,
-                q_dot,
-            );
-            (frame.global_w, frame.global_v)
+                    q_dot,
+                );
+            (frame.children.clone(), frame.global_w, frame.global_v)
         };
 
-        let children = this.borrow().children.clone();
         for child in children {
             Self::update_with_parent(&child, global_w, global_v);
         }
@@ -221,16 +219,15 @@ impl Frame {
     /// Update all cached matrices and their children. For best effect,
     /// only call this function from the "spatial frame" (the root frame).
     pub fn update(this: &FrameRef) {
-        Self::update_local(this);
-
         if let Some(parent_frame) = Self::parent_frame(this) {
             let parent = parent_frame.borrow();
             let parent_global_w = parent.global_w;
             let parent_global_v = parent.global_v;
             drop(parent);
 
-            let (global_w, global_v) = {
+            let (children, global_w, global_v) = {
                 let mut frame = this.borrow_mut();
+                Self::update_local_in_place(&mut frame);
                 let q_dot = frame.coordinate_value[1];
                 (frame.global_w, frame.global_v) = Self::update_global(
                     &frame.local_w,
@@ -239,36 +236,36 @@ impl Frame {
                     &parent_global_v,
                     q_dot,
                 );
-                (frame.global_w, frame.global_v)
+                (frame.children.clone(), frame.global_w, frame.global_v)
             };
 
-            let children = this.borrow().children.clone();
             for child in children {
                 Self::update_with_parent(&child, global_w, global_v);
             }
         } else {
-            let local_w = this.borrow().local_w;
-            {
+            let (children, local_w, global_v_zero) = {
                 let mut frame = this.borrow_mut();
-                frame.global_w = local_w;
+                Self::update_local_in_place(&mut frame);
+                frame.global_w = frame.local_w;
                 frame.global_v = Matrix4d::zeros();
-            }
+                (frame.children.clone(), frame.local_w, frame.global_v)
+            };
 
-            let children = this.borrow().children.clone();
             for child in children {
-                Self::update_with_parent(&child, local_w, Matrix4d::zeros());
+                Self::update_with_parent(&child, local_w, global_v_zero);
             }
         }
     }
 
     /// Update the cached local transformation matrices.
     pub fn update_local(this: &FrameRef) {
-        let (q, coordinate_type, is_fixed) = {
-            let frame = this.borrow();
-            (frame.coordinate_value[0], frame.coordinate_type, frame.is_fixed)
-        };
+        let mut frame = this.borrow_mut();
+        Self::update_local_in_place(&mut frame);
+    }
 
-        let (w, dw, ddw, w_inv, dw_inv, ddw_inv, z) = match coordinate_type {
+    fn update_local_in_place(frame: &mut Frame) {
+        let q = frame.coordinate_value[0];
+        let (w, dw, ddw, w_inv, dw_inv, ddw_inv, z) = match frame.coordinate_type {
             // no transformation
             CoordinateType::None => (
                 Matrix4d::identity(),
@@ -345,8 +342,7 @@ impl Frame {
 
             // x-rotation
             CoordinateType::XRot => {
-                let cq = q.cos();
-                let sq = q.sin();
+                let (sq, cq) = q.sin_cos();
 
                 let mut w = Matrix4d::identity();
                 w[(1, 1)] = cq;
@@ -390,8 +386,7 @@ impl Frame {
 
             // y-rotation
             CoordinateType::YRot => {
-                let cq = q.cos();
-                let sq = q.sin();
+                let (sq, cq) = q.sin_cos();
 
                 let mut w = Matrix4d::identity();
                 w[(0, 0)] = cq;
@@ -435,8 +430,7 @@ impl Frame {
 
             // z-rotation
             CoordinateType::ZRot => {
-                let cq = q.cos();
-                let sq = q.sin();
+                let (sq, cq) = q.sin_cos();
 
                 let mut w = Matrix4d::identity();
                 w[(0, 0)] = cq;
@@ -479,12 +473,11 @@ impl Frame {
             }
         };
 
-        let mut frame = this.borrow_mut();
         frame.local_w = w;
         frame.local_w_inv = w_inv;
         frame.local_z = z;
 
-        if is_fixed {
+        if frame.is_fixed {
             frame.local_dw = Matrix4d::zeros();
             frame.local_ddw = Matrix4d::zeros();
             frame.local_dw_inv = Matrix4d::zeros();
