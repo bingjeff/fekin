@@ -88,14 +88,91 @@ impl Frame {
         z
     }
 
+    #[inline(always)]
+    fn mul_transform(a_tfm_b: &Matrix4d, b_tfm_c: &Matrix4d) -> Matrix4d {
+        let mut a_tfm_c = Matrix4d::identity();
+
+        for i in 0..3 {
+            for j in 0..3 {
+                a_tfm_c[(i, j)] = a_tfm_b[(i, 0)] * b_tfm_c[(0, j)]
+                    + a_tfm_b[(i, 1)] * b_tfm_c[(1, j)]
+                    + a_tfm_b[(i, 2)] * b_tfm_c[(2, j)];
+            }
+            a_tfm_c[(i, 3)] = a_tfm_b[(i, 0)] * b_tfm_c[(0, 3)]
+                + a_tfm_b[(i, 1)] * b_tfm_c[(1, 3)]
+                + a_tfm_b[(i, 2)] * b_tfm_c[(2, 3)]
+                + a_tfm_b[(i, 3)];
+        }
+
+        a_tfm_c
+    }
+
+    #[inline(always)]
+    fn similarity_twist(local_w: &Matrix4d, parent_global_v: &Matrix4d) -> Matrix4d {
+        let mut local_w_inv_parent_global_v_local_w = Matrix4d::zeros();
+
+        let mut omega_t = [0.0; 3];
+        for i in 0..3 {
+            omega_t[i] = parent_global_v[(i, 0)] * local_w[(0, 3)]
+                + parent_global_v[(i, 1)] * local_w[(1, 3)]
+                + parent_global_v[(i, 2)] * local_w[(2, 3)]
+                + parent_global_v[(i, 3)];
+        }
+
+        let mut omega_r = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                omega_r[i][j] = parent_global_v[(i, 0)] * local_w[(0, j)]
+                    + parent_global_v[(i, 1)] * local_w[(1, j)]
+                    + parent_global_v[(i, 2)] * local_w[(2, j)];
+            }
+        }
+
+        for i in 0..3 {
+            for j in 0..3 {
+                local_w_inv_parent_global_v_local_w[(i, j)] = local_w[(0, i)] * omega_r[0][j]
+                    + local_w[(1, i)] * omega_r[1][j]
+                    + local_w[(2, i)] * omega_r[2][j];
+            }
+            local_w_inv_parent_global_v_local_w[(i, 3)] = local_w[(0, i)] * omega_t[0]
+                + local_w[(1, i)] * omega_t[1]
+                + local_w[(2, i)] * omega_t[2];
+        }
+
+        local_w_inv_parent_global_v_local_w
+    }
+
+    #[inline(always)]
+    fn update_global(
+        local_w: &Matrix4d,
+        local_z: &Matrix4d,
+        parent_global_w: &Matrix4d,
+        parent_global_v: &Matrix4d,
+        q_dot: f64,
+    ) -> (Matrix4d, Matrix4d) {
+        let global_w = Self::mul_transform(parent_global_w, local_w);
+        let mut global_v = Self::similarity_twist(local_w, parent_global_v);
+        for i in 0..4 {
+            for j in 0..4 {
+                global_v[(i, j)] += local_z[(i, j)] * q_dot;
+            }
+        }
+        (global_w, global_v)
+    }
+
     fn update_with_parent(this: &FrameRef, parent_global_w: Matrix4d, parent_global_v: Matrix4d) {
         Self::update_local(this);
 
         let (global_w, global_v) = {
             let mut frame = this.borrow_mut();
             let q_dot = frame.coordinate_value[1];
-            frame.global_w = parent_global_w * frame.local_w;
-            frame.global_v = frame.local_w_inv * parent_global_v * frame.local_w + frame.local_z * q_dot;
+            (frame.global_w, frame.global_v) = Self::update_global(
+                &frame.local_w,
+                &frame.local_z,
+                &parent_global_w,
+                &parent_global_v,
+                q_dot,
+            );
             (frame.global_w, frame.global_v)
         };
 
@@ -155,8 +232,13 @@ impl Frame {
             let (global_w, global_v) = {
                 let mut frame = this.borrow_mut();
                 let q_dot = frame.coordinate_value[1];
-                frame.global_w = parent_global_w * frame.local_w;
-                frame.global_v = frame.local_w_inv * parent_global_v * frame.local_w + frame.local_z * q_dot;
+                (frame.global_w, frame.global_v) = Self::update_global(
+                    &frame.local_w,
+                    &frame.local_z,
+                    &parent_global_w,
+                    &parent_global_v,
+                    q_dot,
+                );
                 (frame.global_w, frame.global_v)
             };
 
