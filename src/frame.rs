@@ -287,24 +287,20 @@ impl Frame {
 
     /// Update the cached local transformation matrices.
     pub fn update_local(this: &FrameRef) {
-        let (q, coordinate_type, is_fixed) = {
-            let frame = this.borrow();
-            (
-                frame.coordinate_value[0],
-                frame.coordinate_type,
-                frame.is_fixed,
-            )
-        };
+        let mut frame = this.borrow_mut();
+        let q = frame.coordinate_value[0];
+        let coordinate_type = frame.coordinate_type;
+        let is_fixed = frame.is_fixed;
 
-        let mut data = FrameData::default();
+        let data = &mut frame.frame_data;
         match coordinate_type {
             CoordinateType::Fixed => (),
-            CoordinateType::XTran => update_translation_x(&mut data, q),
-            CoordinateType::YTran => update_translation_y(&mut data, q),
-            CoordinateType::ZTran => update_translation_z(&mut data, q),
-            CoordinateType::XRot => update_rotation_x(&mut data, q),
-            CoordinateType::YRot => update_rotation_y(&mut data, q),
-            CoordinateType::ZRot => update_rotation_z(&mut data, q),
+            CoordinateType::XTran => update_translation_x(data, q),
+            CoordinateType::YTran => update_translation_y(data, q),
+            CoordinateType::ZTran => update_translation_z(data, q),
+            CoordinateType::XRot => update_rotation_x(data, q),
+            CoordinateType::YRot => update_rotation_y(data, q),
+            CoordinateType::ZRot => update_rotation_z(data, q),
         }
 
         if is_fixed {
@@ -313,15 +309,6 @@ impl Frame {
             data.this_dw_parent = Matrix4d::zeros();
             data.this_ddw_parent = Matrix4d::zeros();
         }
-
-        let mut frame = this.borrow_mut();
-        frame.frame_data.parent_w_this = data.parent_w_this;
-        frame.frame_data.parent_dw_this = data.parent_dw_this;
-        frame.frame_data.parent_ddw_this = data.parent_ddw_this;
-        frame.frame_data.this_w_parent = data.this_w_parent;
-        frame.frame_data.this_dw_parent = data.this_dw_parent;
-        frame.frame_data.this_ddw_parent = data.this_ddw_parent;
-        frame.frame_data.parent_z_this = data.parent_z_this;
     }
 
     /// Transformation: first partial with respect to q in global coordinates.
