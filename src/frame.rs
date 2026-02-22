@@ -74,22 +74,6 @@ impl Default for FrameData {
     }
 }
 
-impl FrameData {
-    fn zeros() -> Self {
-        Self {
-            parent_w_this: Matrix4d::zeros(),
-            global_w_this: Matrix4d::zeros(),
-            parent_dw_this: Matrix4d::zeros(),
-            parent_ddw_this: Matrix4d::zeros(),
-            this_w_parent: Matrix4d::zeros(),
-            this_dw_parent: Matrix4d::zeros(),
-            this_ddw_parent: Matrix4d::zeros(),
-            parent_z_this: Matrix4d::zeros(),
-            global_v_this: Matrix4d::zeros(),
-        }
-    }
-}
-
 fn update_translation_x(data: &mut FrameData, q: f64) {
     data.parent_w_this[(0, 3)] = q;
     data.this_w_parent[(0, 3)] = -q;
@@ -247,7 +231,7 @@ impl Frame {
             coordinate_value,
             coordinate_type,
             is_fixed: is_coordinate_fixed,
-            frame_data: FrameData::zeros(),
+            frame_data: FrameData::default(),
         }));
 
         Self::update(&frame);
@@ -311,26 +295,33 @@ impl Frame {
                 frame.is_fixed,
             )
         };
-        if !is_fixed {
-            let mut data = FrameData::default();
-            match coordinate_type {
-                CoordinateType::Fixed => (),
-                CoordinateType::XTran => update_translation_x(&mut data, q),
-                CoordinateType::YTran => update_translation_y(&mut data, q),
-                CoordinateType::ZTran => update_translation_z(&mut data, q),
-                CoordinateType::XRot => update_rotation_x(&mut data, q),
-                CoordinateType::YRot => update_rotation_y(&mut data, q),
-                CoordinateType::ZRot => update_rotation_z(&mut data, q),
-            }
-            let mut frame = this.borrow_mut();
-            frame.frame_data.parent_w_this = data.parent_w_this;
-            frame.frame_data.parent_dw_this = data.parent_dw_this;
-            frame.frame_data.parent_ddw_this = data.parent_ddw_this;
-            frame.frame_data.this_w_parent = data.this_w_parent;
-            frame.frame_data.this_dw_parent = data.this_dw_parent;
-            frame.frame_data.this_ddw_parent = data.this_ddw_parent;
-            frame.frame_data.parent_z_this = data.parent_z_this;
+
+        let mut data = FrameData::default();
+        match coordinate_type {
+            CoordinateType::Fixed => (),
+            CoordinateType::XTran => update_translation_x(&mut data, q),
+            CoordinateType::YTran => update_translation_y(&mut data, q),
+            CoordinateType::ZTran => update_translation_z(&mut data, q),
+            CoordinateType::XRot => update_rotation_x(&mut data, q),
+            CoordinateType::YRot => update_rotation_y(&mut data, q),
+            CoordinateType::ZRot => update_rotation_z(&mut data, q),
         }
+
+        if is_fixed {
+            data.parent_dw_this = Matrix4d::zeros();
+            data.parent_ddw_this = Matrix4d::zeros();
+            data.this_dw_parent = Matrix4d::zeros();
+            data.this_ddw_parent = Matrix4d::zeros();
+        }
+
+        let mut frame = this.borrow_mut();
+        frame.frame_data.parent_w_this = data.parent_w_this;
+        frame.frame_data.parent_dw_this = data.parent_dw_this;
+        frame.frame_data.parent_ddw_this = data.parent_ddw_this;
+        frame.frame_data.this_w_parent = data.this_w_parent;
+        frame.frame_data.this_dw_parent = data.this_dw_parent;
+        frame.frame_data.this_ddw_parent = data.this_ddw_parent;
+        frame.frame_data.parent_z_this = data.parent_z_this;
     }
 
     /// Transformation: first partial with respect to q in global coordinates.
