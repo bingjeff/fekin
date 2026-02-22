@@ -34,6 +34,181 @@ pub enum CoordinateType {
     ZRot,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameData {
+    // Transformations to local and global coordinates.
+    parent_w_this: Matrix4d,
+    global_w_this: Matrix4d,
+
+    // First partial with respect to this frame.
+    parent_dw_this: Matrix4d,
+
+    // Second partial with respect to this frame.
+    parent_ddw_this: Matrix4d,
+
+    // Inverses.
+    this_w_parent: Matrix4d,
+    this_dw_parent: Matrix4d,
+    this_ddw_parent: Matrix4d,
+
+    // Twist matrix
+    parent_z_this: Matrix4d,
+
+    // Frame velocity
+    global_v_this: Matrix4d,
+}
+
+impl Default for FrameData {
+    fn default() -> Self {
+        Self {
+            parent_w_this: Matrix4d::identity(),
+            global_w_this: Matrix4d::identity(),
+            parent_dw_this: Matrix4d::zeros(),
+            parent_ddw_this: Matrix4d::zeros(),
+            this_w_parent: Matrix4d::identity(),
+            this_dw_parent: Matrix4d::zeros(),
+            this_ddw_parent: Matrix4d::zeros(),
+            parent_z_this: Matrix4d::zeros(),
+            global_v_this: Matrix4d::zeros(),
+        }
+    }
+}
+
+fn update_translation_x(data: &mut FrameData, q: f64) {
+    data.parent_w_this[(0, 3)] = q;
+    data.this_w_parent[(0, 3)] = -q;
+    data.parent_dw_this[(0, 3)] = 1.0;
+    data.this_dw_parent[(0, 3)] = -1.0;
+    data.parent_z_this[(0, 3)] = 1.0;
+}
+
+fn update_translation_y(data: &mut FrameData, q: f64) {
+    data.parent_w_this[(1, 3)] = q;
+    data.this_w_parent[(1, 3)] = -q;
+    data.parent_dw_this[(1, 3)] = 1.0;
+    data.this_dw_parent[(1, 3)] = -1.0;
+    data.parent_z_this[(1, 3)] = 1.0;
+}
+
+fn update_translation_z(data: &mut FrameData, q: f64) {
+    data.parent_w_this[(2, 3)] = q;
+    data.this_w_parent[(2, 3)] = -q;
+    data.parent_dw_this[(2, 3)] = 1.0;
+    data.this_dw_parent[(2, 3)] = -1.0;
+    data.parent_z_this[(2, 3)] = 1.0;
+}
+
+fn update_rotation_x(data: &mut FrameData, q: f64) {
+    let cq = q.cos();
+    let sq = q.sin();
+
+    data.parent_w_this[(1, 1)] = cq;
+    data.parent_w_this[(1, 2)] = -sq;
+    data.parent_w_this[(2, 1)] = sq;
+    data.parent_w_this[(2, 2)] = cq;
+
+    data.parent_dw_this[(1, 1)] = -sq;
+    data.parent_dw_this[(1, 2)] = -cq;
+    data.parent_dw_this[(2, 1)] = cq;
+    data.parent_dw_this[(2, 2)] = -sq;
+
+    data.parent_ddw_this[(1, 1)] = -cq;
+    data.parent_ddw_this[(1, 2)] = sq;
+    data.parent_ddw_this[(2, 1)] = -sq;
+    data.parent_ddw_this[(2, 2)] = -cq;
+
+    data.this_w_parent[(1, 1)] = cq;
+    data.this_w_parent[(1, 2)] = sq;
+    data.this_w_parent[(2, 1)] = -sq;
+    data.this_w_parent[(2, 2)] = cq;
+
+    data.this_dw_parent[(1, 1)] = -sq;
+    data.this_dw_parent[(1, 2)] = cq;
+    data.this_dw_parent[(2, 1)] = -cq;
+    data.this_dw_parent[(2, 2)] = -sq;
+
+    data.this_ddw_parent[(1, 1)] = -cq;
+    data.this_ddw_parent[(1, 2)] = -sq;
+    data.this_ddw_parent[(2, 1)] = sq;
+    data.this_ddw_parent[(2, 2)] = -cq;
+
+    data.parent_z_this = data.parent_w_this.transpose() * data.parent_dw_this;
+}
+
+fn update_rotation_y(data: &mut FrameData, q: f64) {
+    let cq = q.cos();
+    let sq = q.sin();
+
+    data.parent_w_this[(0, 0)] = cq;
+    data.parent_w_this[(0, 2)] = sq;
+    data.parent_w_this[(2, 0)] = -sq;
+    data.parent_w_this[(2, 2)] = cq;
+
+    data.parent_dw_this[(0, 0)] = -sq;
+    data.parent_dw_this[(0, 2)] = cq;
+    data.parent_dw_this[(2, 0)] = -cq;
+    data.parent_dw_this[(2, 2)] = -sq;
+
+    data.parent_ddw_this[(0, 0)] = -cq;
+    data.parent_ddw_this[(0, 2)] = -sq;
+    data.parent_ddw_this[(2, 0)] = sq;
+    data.parent_ddw_this[(2, 2)] = -cq;
+
+    data.this_w_parent[(0, 0)] = cq;
+    data.this_w_parent[(0, 2)] = -sq;
+    data.this_w_parent[(2, 0)] = sq;
+    data.this_w_parent[(2, 2)] = cq;
+
+    data.this_dw_parent[(0, 0)] = -sq;
+    data.this_dw_parent[(0, 2)] = -cq;
+    data.this_dw_parent[(2, 0)] = cq;
+    data.this_dw_parent[(2, 2)] = -sq;
+
+    data.this_ddw_parent[(0, 0)] = -cq;
+    data.this_ddw_parent[(0, 2)] = sq;
+    data.this_ddw_parent[(2, 0)] = -sq;
+    data.this_ddw_parent[(2, 2)] = -cq;
+
+    data.parent_z_this = data.parent_w_this.transpose() * data.parent_dw_this;
+}
+
+fn update_rotation_z(data: &mut FrameData, q: f64) {
+    let cq = q.cos();
+    let sq = q.sin();
+
+    data.parent_w_this[(0, 0)] = cq;
+    data.parent_w_this[(0, 1)] = -sq;
+    data.parent_w_this[(1, 0)] = sq;
+    data.parent_w_this[(1, 1)] = cq;
+
+    data.parent_dw_this[(0, 0)] = -sq;
+    data.parent_dw_this[(0, 1)] = -cq;
+    data.parent_dw_this[(1, 0)] = cq;
+    data.parent_dw_this[(1, 1)] = -sq;
+
+    data.parent_ddw_this[(0, 0)] = -cq;
+    data.parent_ddw_this[(0, 1)] = sq;
+    data.parent_ddw_this[(1, 0)] = -sq;
+    data.parent_ddw_this[(1, 1)] = -cq;
+
+    data.this_w_parent[(0, 0)] = cq;
+    data.this_w_parent[(0, 1)] = sq;
+    data.this_w_parent[(1, 0)] = -sq;
+    data.this_w_parent[(1, 1)] = cq;
+
+    data.this_dw_parent[(0, 0)] = -sq;
+    data.this_dw_parent[(0, 1)] = cq;
+    data.this_dw_parent[(1, 0)] = -cq;
+    data.this_dw_parent[(1, 1)] = -sq;
+
+    data.this_ddw_parent[(0, 0)] = -cq;
+    data.this_ddw_parent[(0, 1)] = -sq;
+    data.this_ddw_parent[(1, 0)] = sq;
+    data.this_ddw_parent[(1, 1)] = -cq;
+
+    data.parent_z_this = data.parent_w_this.transpose() * data.parent_dw_this;
+}
+
 pub struct Frame {
     parent: Option<Weak<RefCell<Frame>>>,
     children: Vec<FrameRef>,
@@ -142,235 +317,32 @@ impl Frame {
     pub fn update_local(this: &FrameRef) {
         let (q, coordinate_type, is_fixed) = {
             let frame = this.borrow();
-            (frame.coordinate_value[0], frame.coordinate_type, frame.is_fixed)
+            (
+                frame.coordinate_value[0],
+                frame.coordinate_type,
+                frame.is_fixed,
+            )
         };
-
-        let (w, dw, ddw, w_inv, dw_inv, ddw_inv, z) = match coordinate_type {
-            // no transformation
-            CoordinateType::None => (
-                Matrix4d::identity(),
-                Matrix4d::zeros(),
-                Matrix4d::zeros(),
-                Matrix4d::identity(),
-                Matrix4d::zeros(),
-                Matrix4d::zeros(),
-                Matrix4d::zeros(),
-            ),
-
-            // x-translation
-            CoordinateType::XTran => {
-                let mut w = Matrix4d::identity();
-                w[(0, 3)] = q;
-
-                let mut dw = Matrix4d::zeros();
-                dw[(0, 3)] = 1.0;
-
-                let ddw = Matrix4d::zeros();
-
-                let mut w_inv = w;
-                w_inv[(0, 3)] = -q;
-
-                let mut dw_inv = dw;
-                dw_inv[(0, 3)] = -1.0;
-
-                let ddw_inv = ddw;
-                let z = dw;
-                (w, dw, ddw, w_inv, dw_inv, ddw_inv, z)
+        if !is_fixed {
+            let mut data = FrameData::default();
+            match coordinate_type {
+                CoordinateType::None => (),
+                CoordinateType::XTran => update_translation_x(&mut data, q),
+                CoordinateType::YTran => update_translation_y(&mut data, q),
+                CoordinateType::ZTran => update_translation_z(&mut data, q),
+                CoordinateType::XRot => update_rotation_x(&mut data, q),
+                CoordinateType::YRot => update_rotation_y(&mut data, q),
+                CoordinateType::ZRot => update_rotation_z(&mut data, q),
             }
+            let mut frame = this.borrow_mut();
+            frame.local_w = data.parent_w_this;
+            frame.local_dw = data.parent_dw_this;
+            frame.local_ddw = data.parent_ddw_this;
+            frame.local_w_inv = data.this_w_parent;
 
-            // y-translation
-            CoordinateType::YTran => {
-                let mut w = Matrix4d::identity();
-                w[(1, 3)] = q;
-
-                let mut dw = Matrix4d::zeros();
-                dw[(1, 3)] = 1.0;
-
-                let ddw = Matrix4d::zeros();
-
-                let mut w_inv = w;
-                w_inv[(1, 3)] = -q;
-
-                let mut dw_inv = dw;
-                dw_inv[(1, 3)] = -1.0;
-
-                let ddw_inv = ddw;
-                let z = dw;
-                (w, dw, ddw, w_inv, dw_inv, ddw_inv, z)
-            }
-
-            // z-translation
-            CoordinateType::ZTran => {
-                let mut w = Matrix4d::identity();
-                w[(2, 3)] = q;
-
-                let mut dw = Matrix4d::zeros();
-                dw[(2, 3)] = 1.0;
-
-                let ddw = Matrix4d::zeros();
-
-                let mut w_inv = w;
-                w_inv[(2, 3)] = -q;
-
-                let mut dw_inv = dw;
-                dw_inv[(2, 3)] = -1.0;
-
-                let ddw_inv = ddw;
-                let z = dw;
-                (w, dw, ddw, w_inv, dw_inv, ddw_inv, z)
-            }
-
-            // x-rotation
-            CoordinateType::XRot => {
-                let cq = q.cos();
-                let sq = q.sin();
-
-                let mut w = Matrix4d::identity();
-                w[(1, 1)] = cq;
-                w[(1, 2)] = -sq;
-                w[(2, 1)] = sq;
-                w[(2, 2)] = cq;
-
-                let mut dw = Matrix4d::zeros();
-                dw[(1, 1)] = -sq;
-                dw[(1, 2)] = -cq;
-                dw[(2, 1)] = cq;
-                dw[(2, 2)] = -sq;
-
-                let mut ddw = Matrix4d::zeros();
-                ddw[(1, 1)] = -cq;
-                ddw[(1, 2)] = sq;
-                ddw[(2, 1)] = -sq;
-                ddw[(2, 2)] = -cq;
-
-                let mut w_inv = Matrix4d::identity();
-                w_inv[(1, 1)] = cq;
-                w_inv[(1, 2)] = sq;
-                w_inv[(2, 1)] = -sq;
-                w_inv[(2, 2)] = cq;
-
-                let mut dw_inv = Matrix4d::zeros();
-                dw_inv[(1, 1)] = -sq;
-                dw_inv[(1, 2)] = cq;
-                dw_inv[(2, 1)] = -cq;
-                dw_inv[(2, 2)] = -sq;
-
-                let mut ddw_inv = Matrix4d::zeros();
-                ddw_inv[(1, 1)] = -cq;
-                ddw_inv[(1, 2)] = -sq;
-                ddw_inv[(2, 1)] = sq;
-                ddw_inv[(2, 2)] = -cq;
-
-                let z = w.transpose() * dw;
-                (w, dw, ddw, w_inv, dw_inv, ddw_inv, z)
-            }
-
-            // y-rotation
-            CoordinateType::YRot => {
-                let cq = q.cos();
-                let sq = q.sin();
-
-                let mut w = Matrix4d::identity();
-                w[(0, 0)] = cq;
-                w[(0, 2)] = sq;
-                w[(2, 0)] = -sq;
-                w[(2, 2)] = cq;
-
-                let mut dw = Matrix4d::zeros();
-                dw[(0, 0)] = -sq;
-                dw[(0, 2)] = cq;
-                dw[(2, 0)] = -cq;
-                dw[(2, 2)] = -sq;
-
-                let mut ddw = Matrix4d::zeros();
-                ddw[(0, 0)] = -cq;
-                ddw[(0, 2)] = -sq;
-                ddw[(2, 0)] = sq;
-                ddw[(2, 2)] = -cq;
-
-                let mut w_inv = Matrix4d::identity();
-                w_inv[(0, 0)] = cq;
-                w_inv[(0, 2)] = -sq;
-                w_inv[(2, 0)] = sq;
-                w_inv[(2, 2)] = cq;
-
-                let mut dw_inv = Matrix4d::zeros();
-                dw_inv[(0, 0)] = -sq;
-                dw_inv[(0, 2)] = -cq;
-                dw_inv[(2, 0)] = cq;
-                dw_inv[(2, 2)] = -sq;
-
-                let mut ddw_inv = Matrix4d::zeros();
-                ddw_inv[(0, 0)] = -cq;
-                ddw_inv[(0, 2)] = sq;
-                ddw_inv[(2, 0)] = -sq;
-                ddw_inv[(2, 2)] = -cq;
-
-                let z = w.transpose() * dw;
-                (w, dw, ddw, w_inv, dw_inv, ddw_inv, z)
-            }
-
-            // z-rotation
-            CoordinateType::ZRot => {
-                let cq = q.cos();
-                let sq = q.sin();
-
-                let mut w = Matrix4d::identity();
-                w[(0, 0)] = cq;
-                w[(0, 1)] = -sq;
-                w[(1, 0)] = sq;
-                w[(1, 1)] = cq;
-
-                let mut dw = Matrix4d::zeros();
-                dw[(0, 0)] = -sq;
-                dw[(0, 1)] = -cq;
-                dw[(1, 0)] = cq;
-                dw[(1, 1)] = -sq;
-
-                let mut ddw = Matrix4d::zeros();
-                ddw[(0, 0)] = -cq;
-                ddw[(0, 1)] = sq;
-                ddw[(1, 0)] = -sq;
-                ddw[(1, 1)] = -cq;
-
-                let mut w_inv = Matrix4d::identity();
-                w_inv[(0, 0)] = cq;
-                w_inv[(0, 1)] = sq;
-                w_inv[(1, 0)] = -sq;
-                w_inv[(1, 1)] = cq;
-
-                let mut dw_inv = Matrix4d::zeros();
-                dw_inv[(0, 0)] = -sq;
-                dw_inv[(0, 1)] = cq;
-                dw_inv[(1, 0)] = -cq;
-                dw_inv[(1, 1)] = -sq;
-
-                let mut ddw_inv = Matrix4d::zeros();
-                ddw_inv[(0, 0)] = -cq;
-                ddw_inv[(0, 1)] = -sq;
-                ddw_inv[(1, 0)] = sq;
-                ddw_inv[(1, 1)] = -cq;
-
-                let z = w.transpose() * dw;
-                (w, dw, ddw, w_inv, dw_inv, ddw_inv, z)
-            }
-        };
-
-        let mut frame = this.borrow_mut();
-        frame.local_w = w;
-        frame.local_w_inv = w_inv;
-        frame.local_z = z;
-
-        if is_fixed {
-            frame.local_dw = Matrix4d::zeros();
-            frame.local_ddw = Matrix4d::zeros();
-            frame.local_dw_inv = Matrix4d::zeros();
-            frame.local_ddw_inv = Matrix4d::zeros();
-        } else {
-            frame.local_dw = dw;
-            frame.local_ddw = ddw;
-            frame.local_dw_inv = dw_inv;
-            frame.local_ddw_inv = ddw_inv;
+            frame.local_dw_inv = data.this_dw_parent;
+            frame.local_ddw_inv = data.this_ddw_parent;
+            frame.local_z = data.parent_z_this;
         }
     }
 
@@ -441,7 +413,9 @@ impl Frame {
                 frame.local_dw_inv * Self::partial_v(&parent_frame, i_frame) * frame.local_w
                     + frame.local_w_inv * Self::partial_v(&parent_frame, i_frame) * frame.local_dw
             } else {
-                frame.local_w_inv * Self::partial2_v(&parent_frame, i_frame, j_frame) * frame.local_w
+                frame.local_w_inv
+                    * Self::partial2_v(&parent_frame, i_frame, j_frame)
+                    * frame.local_w
             }
         } else {
             Matrix4d::zeros()
@@ -477,7 +451,9 @@ impl Frame {
                 Matrix4d::zeros()
             } else if Rc::ptr_eq(this, q_frame) {
                 frame.local_dw_inv * Self::partial_vd(&parent_frame, qdot_frame) * frame.local_w
-                    + frame.local_w_inv * Self::partial_vd(&parent_frame, qdot_frame) * frame.local_dw
+                    + frame.local_w_inv
+                        * Self::partial_vd(&parent_frame, qdot_frame)
+                        * frame.local_dw
             } else {
                 frame.local_w_inv
                     * Self::partial_v_mixed(&parent_frame, qdot_frame, q_frame)
