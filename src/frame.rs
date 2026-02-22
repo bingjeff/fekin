@@ -25,7 +25,7 @@ pub type FrameRef = Rc<RefCell<Frame>>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CoordinateType {
     #[default]
-    None,
+    Fixed,
     XTran,
     YTran,
     ZTran,
@@ -326,7 +326,7 @@ impl Frame {
         if !is_fixed {
             let mut data = FrameData::default();
             match coordinate_type {
-                CoordinateType::None => (),
+                CoordinateType::Fixed => (),
                 CoordinateType::XTran => update_translation_x(&mut data, q),
                 CoordinateType::YTran => update_translation_y(&mut data, q),
                 CoordinateType::ZTran => update_translation_z(&mut data, q),
@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn new_links_parent_and_updates_global_transform() {
-        let world_frame = Frame::new(None, [0.0, 0.0], CoordinateType::None, false);
+        let world_frame = Frame::new(None, [0.0, 0.0], CoordinateType::Fixed, false);
         let body_frame = Frame::new(Some(&world_frame), [2.0, 0.0], CoordinateType::XTran, false);
 
         assert_eq!(Frame::children(&world_frame).len(), 1);
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn fixed_coordinate_clears_local_derivative_caches() {
-        let world_frame = Frame::new(None, [0.0, 0.0], CoordinateType::None, false);
+        let world_frame = Frame::new(None, [0.0, 0.0], CoordinateType::Fixed, false);
         let body_frame = Frame::new(Some(&world_frame), [0.2, 0.0], CoordinateType::YRot, true);
 
         assert_matrix_close(&Frame::local_dw(&body_frame), &Matrix4d::zeros());
@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn partial_w_matches_local_dw_for_direct_child_of_root() {
-        let world_frame = Frame::new(None, [0.0, 0.0], CoordinateType::None, false);
+        let world_frame = Frame::new(None, [0.0, 0.0], CoordinateType::Fixed, false);
         let body_frame = Frame::new(Some(&world_frame), [1.5, 0.0], CoordinateType::ZTran, false);
 
         assert_matrix_close(
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn partial_vd_matches_local_z_for_self_frame() {
-        let world_frame = Frame::new(None, [0.0, 0.0], CoordinateType::None, false);
+        let world_frame = Frame::new(None, [0.0, 0.0], CoordinateType::Fixed, false);
         let body_frame = Frame::new(Some(&world_frame), [0.3, 0.0], CoordinateType::XRot, false);
 
         assert_matrix_close(
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn update_from_root_propagates_to_descendants() {
-        let world_frame = Frame::new(None, [0.0, 0.0], CoordinateType::None, false);
+        let world_frame = Frame::new(None, [0.0, 0.0], CoordinateType::Fixed, false);
         let body_frame = Frame::new(Some(&world_frame), [1.0, 0.0], CoordinateType::XTran, false);
         let sensor_frame = Frame::new(Some(&body_frame), [2.0, 0.0], CoordinateType::YTran, false);
 

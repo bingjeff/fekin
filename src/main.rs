@@ -33,7 +33,7 @@ fn coordinate_type_for(index: usize) -> CoordinateType {
         3 => CoordinateType::XRot,
         4 => CoordinateType::YRot,
         5 => CoordinateType::ZRot,
-        _ => CoordinateType::None,
+        _ => CoordinateType::Fixed,
     }
 }
 
@@ -42,7 +42,7 @@ fn build_benchmark_tree(
     branches_per_depth: usize,
     nodes_per_branch: usize,
 ) -> (FrameRef, Vec<BenchNode>) {
-    let world_frame = Frame::new(None, [0.0, 0.0], CoordinateType::None, true);
+    let world_frame = Frame::new(None, [0.0, 0.0], CoordinateType::Fixed, true);
     let mut bench_nodes = Vec::new();
     let mut frontier = vec![world_frame.clone()];
     let mut node_index = 0usize;
