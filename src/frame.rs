@@ -74,6 +74,22 @@ impl Default for FrameData {
     }
 }
 
+impl FrameData {
+    fn zeros() -> Self {
+        Self {
+            parent_w_this: Matrix4d::zeros(),
+            global_w_this: Matrix4d::zeros(),
+            parent_dw_this: Matrix4d::zeros(),
+            parent_ddw_this: Matrix4d::zeros(),
+            this_w_parent: Matrix4d::zeros(),
+            this_dw_parent: Matrix4d::zeros(),
+            this_ddw_parent: Matrix4d::zeros(),
+            parent_z_this: Matrix4d::zeros(),
+            global_v_this: Matrix4d::zeros(),
+        }
+    }
+}
+
 fn update_translation_x(data: &mut FrameData, q: f64) {
     data.parent_w_this[(0, 3)] = q;
     data.this_w_parent[(0, 3)] = -q;
@@ -215,27 +231,7 @@ pub struct Frame {
     coordinate_value: [f64; 2],
     coordinate_type: CoordinateType,
     is_fixed: bool,
-
-    // Transformation matrix
-    local_w: Matrix4d,
-    global_w: Matrix4d,
-
-    // First partial with respect this frame
-    local_dw: Matrix4d,
-
-    // Second partial with respect to this frame only
-    local_ddw: Matrix4d,
-
-    // Inverses of various matrices
-    local_w_inv: Matrix4d,
-    local_dw_inv: Matrix4d,
-    local_ddw_inv: Matrix4d,
-
-    // Twist matrix
-    local_z: Matrix4d,
-
-    // Frame velocity
-    global_v: Matrix4d,
+    frame_data: FrameData,
 }
 
 impl Frame {
@@ -251,15 +247,7 @@ impl Frame {
             coordinate_value,
             coordinate_type,
             is_fixed: is_coordinate_fixed,
-            local_w: Matrix4d::zeros(),
-            global_w: Matrix4d::zeros(),
-            local_dw: Matrix4d::zeros(),
-            local_ddw: Matrix4d::zeros(),
-            local_w_inv: Matrix4d::zeros(),
-            local_dw_inv: Matrix4d::zeros(),
-            local_ddw_inv: Matrix4d::zeros(),
-            local_z: Matrix4d::zeros(),
-            global_v: Matrix4d::zeros(),
+            frame_data: FrameData::zeros(),
         }));
 
         Self::update(&frame);
@@ -281,15 +269,15 @@ impl Frame {
         Self::update_local(this);
 
         if let Some(parent_frame) = Self::parent_frame(this) {
-            let parent_global_w = parent_frame.borrow().global_w;
-            let parent_global_v = parent_frame.borrow().global_v;
+            let parent_global_w = parent_frame.borrow().frame_data.global_w_this;
+            let parent_global_v = parent_frame.borrow().frame_data.global_v_this;
 
             let (local_w, local_w_inv, local_z, q_dot) = {
                 let frame = this.borrow();
                 (
-                    frame.local_w,
-                    frame.local_w_inv,
-                    frame.local_z,
+                    frame.frame_data.parent_w_this,
+                    frame.frame_data.this_w_parent,
+                    frame.frame_data.parent_z_this,
                     frame.coordinate_value[1],
                 )
             };
@@ -298,13 +286,13 @@ impl Frame {
             let global_v = local_w_inv * parent_global_v * local_w + local_z * q_dot;
 
             let mut frame = this.borrow_mut();
-            frame.global_w = global_w;
-            frame.global_v = global_v;
+            frame.frame_data.global_w_this = global_w;
+            frame.frame_data.global_v_this = global_v;
         } else {
-            let local_w = this.borrow().local_w;
+            let local_w = this.borrow().frame_data.parent_w_this;
             let mut frame = this.borrow_mut();
-            frame.global_w = local_w;
-            frame.global_v = Matrix4d::zeros();
+            frame.frame_data.global_w_this = local_w;
+            frame.frame_data.global_v_this = Matrix4d::zeros();
         }
 
         let children = this.borrow().children.clone();
@@ -335,14 +323,13 @@ impl Frame {
                 CoordinateType::ZRot => update_rotation_z(&mut data, q),
             }
             let mut frame = this.borrow_mut();
-            frame.local_w = data.parent_w_this;
-            frame.local_dw = data.parent_dw_this;
-            frame.local_ddw = data.parent_ddw_this;
-            frame.local_w_inv = data.this_w_parent;
-
-            frame.local_dw_inv = data.this_dw_parent;
-            frame.local_ddw_inv = data.this_ddw_parent;
-            frame.local_z = data.parent_z_this;
+            frame.frame_data.parent_w_this = data.parent_w_this;
+            frame.frame_data.parent_dw_this = data.parent_dw_this;
+            frame.frame_data.parent_ddw_this = data.parent_ddw_this;
+            frame.frame_data.this_w_parent = data.this_w_parent;
+            frame.frame_data.this_dw_parent = data.this_dw_parent;
+            frame.frame_data.this_ddw_parent = data.this_ddw_parent;
+            frame.frame_data.parent_z_this = data.parent_z_this;
         }
     }
 
@@ -350,9 +337,10 @@ impl Frame {
     pub fn partial_w(this: &FrameRef, i_frame: &FrameRef) -> Matrix4d {
         if let Some(parent_frame) = Self::parent_frame(this) {
             if Rc::ptr_eq(this, i_frame) {
-                parent_frame.borrow().global_w * this.borrow().local_dw
+                parent_frame.borrow().frame_data.global_w_this
+                    * this.borrow().frame_data.parent_dw_this
             } else {
-                Self::partial_w(&parent_frame, i_frame) * this.borrow().local_w
+                Self::partial_w(&parent_frame, i_frame) * this.borrow().frame_data.parent_w_this
             }
         } else {
             Matrix4d::zeros()
@@ -366,13 +354,15 @@ impl Frame {
             let is_j = Rc::ptr_eq(this, j_frame);
 
             if is_i && is_j {
-                parent_frame.borrow().global_w * this.borrow().local_ddw
+                parent_frame.borrow().frame_data.global_w_this
+                    * this.borrow().frame_data.parent_ddw_this
             } else if is_i {
-                Self::partial_w(&parent_frame, j_frame) * this.borrow().local_dw
+                Self::partial_w(&parent_frame, j_frame) * this.borrow().frame_data.parent_dw_this
             } else if is_j {
-                Self::partial_w(&parent_frame, i_frame) * this.borrow().local_dw
+                Self::partial_w(&parent_frame, i_frame) * this.borrow().frame_data.parent_dw_this
             } else {
-                Self::partial2_w(&parent_frame, i_frame, j_frame) * this.borrow().local_w
+                Self::partial2_w(&parent_frame, i_frame, j_frame)
+                    * this.borrow().frame_data.parent_w_this
             }
         } else {
             Matrix4d::zeros()
@@ -385,10 +375,16 @@ impl Frame {
             let frame = this.borrow();
 
             if Rc::ptr_eq(this, i_frame) {
-                frame.local_dw_inv * parent_frame.borrow().global_v * frame.local_w
-                    + frame.local_w_inv * parent_frame.borrow().global_v * frame.local_dw
+                frame.frame_data.this_dw_parent
+                    * parent_frame.borrow().frame_data.global_v_this
+                    * frame.frame_data.parent_w_this
+                    + frame.frame_data.this_w_parent
+                        * parent_frame.borrow().frame_data.global_v_this
+                        * frame.frame_data.parent_dw_this
             } else {
-                frame.local_w_inv * Self::partial_v(&parent_frame, i_frame) * frame.local_w
+                frame.frame_data.this_w_parent
+                    * Self::partial_v(&parent_frame, i_frame)
+                    * frame.frame_data.parent_w_this
             }
         } else {
             Matrix4d::zeros()
@@ -403,19 +399,34 @@ impl Frame {
             let frame = this.borrow();
 
             if is_i && is_j {
-                frame.local_ddw_inv * parent_frame.borrow().global_v * frame.local_w
-                    + (frame.local_dw_inv * parent_frame.borrow().global_v * frame.local_dw) * 2.0
-                    + frame.local_w_inv * parent_frame.borrow().global_v * frame.local_ddw
+                frame.frame_data.this_ddw_parent
+                    * parent_frame.borrow().frame_data.global_v_this
+                    * frame.frame_data.parent_w_this
+                    + (frame.frame_data.this_dw_parent
+                        * parent_frame.borrow().frame_data.global_v_this
+                        * frame.frame_data.parent_dw_this)
+                        * 2.0
+                    + frame.frame_data.this_w_parent
+                        * parent_frame.borrow().frame_data.global_v_this
+                        * frame.frame_data.parent_ddw_this
             } else if is_i {
-                frame.local_dw_inv * Self::partial_v(&parent_frame, j_frame) * frame.local_w
-                    + frame.local_w_inv * Self::partial_v(&parent_frame, j_frame) * frame.local_dw
+                frame.frame_data.this_dw_parent
+                    * Self::partial_v(&parent_frame, j_frame)
+                    * frame.frame_data.parent_w_this
+                    + frame.frame_data.this_w_parent
+                        * Self::partial_v(&parent_frame, j_frame)
+                        * frame.frame_data.parent_dw_this
             } else if is_j {
-                frame.local_dw_inv * Self::partial_v(&parent_frame, i_frame) * frame.local_w
-                    + frame.local_w_inv * Self::partial_v(&parent_frame, i_frame) * frame.local_dw
+                frame.frame_data.this_dw_parent
+                    * Self::partial_v(&parent_frame, i_frame)
+                    * frame.frame_data.parent_w_this
+                    + frame.frame_data.this_w_parent
+                        * Self::partial_v(&parent_frame, i_frame)
+                        * frame.frame_data.parent_dw_this
             } else {
-                frame.local_w_inv
+                frame.frame_data.this_w_parent
                     * Self::partial2_v(&parent_frame, i_frame, j_frame)
-                    * frame.local_w
+                    * frame.frame_data.parent_w_this
             }
         } else {
             Matrix4d::zeros()
@@ -428,9 +439,11 @@ impl Frame {
             let frame = this.borrow();
 
             if Rc::ptr_eq(this, i_frame) {
-                frame.local_z
+                frame.frame_data.parent_z_this
             } else {
-                frame.local_w_inv * Self::partial_vd(&parent_frame, i_frame) * frame.local_w
+                frame.frame_data.this_w_parent
+                    * Self::partial_vd(&parent_frame, i_frame)
+                    * frame.frame_data.parent_w_this
             }
         } else {
             Matrix4d::zeros()
@@ -450,14 +463,16 @@ impl Frame {
             if Rc::ptr_eq(this, qdot_frame) {
                 Matrix4d::zeros()
             } else if Rc::ptr_eq(this, q_frame) {
-                frame.local_dw_inv * Self::partial_vd(&parent_frame, qdot_frame) * frame.local_w
-                    + frame.local_w_inv
+                frame.frame_data.this_dw_parent
+                    * Self::partial_vd(&parent_frame, qdot_frame)
+                    * frame.frame_data.parent_w_this
+                    + frame.frame_data.this_w_parent
                         * Self::partial_vd(&parent_frame, qdot_frame)
-                        * frame.local_dw
+                        * frame.frame_data.parent_dw_this
             } else {
-                frame.local_w_inv
+                frame.frame_data.this_w_parent
                     * Self::partial_v_mixed(&parent_frame, qdot_frame, q_frame)
-                    * frame.local_w
+                    * frame.frame_data.parent_w_this
             }
         } else {
             Matrix4d::zeros()
@@ -473,35 +488,35 @@ impl Frame {
     }
 
     pub fn local_w(this: &FrameRef) -> Matrix4d {
-        this.borrow().local_w
+        this.borrow().frame_data.parent_w_this
     }
 
     pub fn global_w(this: &FrameRef) -> Matrix4d {
-        this.borrow().global_w
+        this.borrow().frame_data.global_w_this
     }
 
     pub fn local_dw(this: &FrameRef) -> Matrix4d {
-        this.borrow().local_dw
+        this.borrow().frame_data.parent_dw_this
     }
 
     pub fn local_ddw(this: &FrameRef) -> Matrix4d {
-        this.borrow().local_ddw
+        this.borrow().frame_data.parent_ddw_this
     }
 
     pub fn global_v(this: &FrameRef) -> Matrix4d {
-        this.borrow().global_v
+        this.borrow().frame_data.global_v_this
     }
 
     pub fn local_dw_inv(this: &FrameRef) -> Matrix4d {
-        this.borrow().local_dw_inv
+        this.borrow().frame_data.this_dw_parent
     }
 
     pub fn local_ddw_inv(this: &FrameRef) -> Matrix4d {
-        this.borrow().local_ddw_inv
+        this.borrow().frame_data.this_ddw_parent
     }
 
     pub fn local_z(this: &FrameRef) -> Matrix4d {
-        this.borrow().local_z
+        this.borrow().frame_data.parent_z_this
     }
 }
 
