@@ -132,7 +132,10 @@ fn update_rotation_x(data: &mut FrameData, q: f64) {
     data.this_ddw_parent[(2, 1)] = sq;
     data.this_ddw_parent[(2, 2)] = -cq;
 
-    data.parent_z_this = data.parent_w_this.transpose() * data.parent_dw_this;
+    data.parent_z_this[(1,1)] = 0.0;
+    data.parent_z_this[(1,2)] = -1.0;
+    data.parent_z_this[(2,1)] = 1.0;
+    data.parent_z_this[(2,2)] = 0.0;
 }
 
 fn update_rotation_y(data: &mut FrameData, q: f64) {
@@ -169,7 +172,10 @@ fn update_rotation_y(data: &mut FrameData, q: f64) {
     data.this_ddw_parent[(2, 0)] = -sq;
     data.this_ddw_parent[(2, 2)] = -cq;
 
-    data.parent_z_this = data.parent_w_this.transpose() * data.parent_dw_this;
+    data.parent_z_this[(0,0)] = 0.0;
+    data.parent_z_this[(0,2)] = 1.0;
+    data.parent_z_this[(2,0)] = -1.0;
+    data.parent_z_this[(2,2)] = 0.0;
 }
 
 fn update_rotation_z(data: &mut FrameData, q: f64) {
@@ -206,7 +212,10 @@ fn update_rotation_z(data: &mut FrameData, q: f64) {
     data.this_ddw_parent[(1, 0)] = sq;
     data.this_ddw_parent[(1, 1)] = -cq;
 
-    data.parent_z_this = data.parent_w_this.transpose() * data.parent_dw_this;
+    data.parent_z_this[(0,0)] = 0.0;
+    data.parent_z_this[(0,1)] = -1.0;
+    data.parent_z_this[(1,0)] = 1.0;
+    data.parent_z_this[(1,1)] = 0.0;
 }
 
 pub struct Frame {
@@ -556,6 +565,27 @@ mod tests {
             &Frame::partial_vd(&body_frame, &body_frame),
             &Frame::local_z(&body_frame),
         );
+    }
+
+       #[test]
+    fn rotation_parent_z_matches_w_transpose_times_dw() {
+        let rotations = [
+            (CoordinateType::XRot, 0.31),
+            (CoordinateType::YRot, -0.79),
+            (CoordinateType::ZRot, 1.27),
+        ];
+
+        for (coordinate_type, q) in rotations {
+            let world_frame = Frame::new(None, [0.0, 0.0], CoordinateType::Fixed, false);
+            let body_frame = Frame::new(Some(&world_frame), [q, 0.0], coordinate_type, false);
+
+            let frame = body_frame.borrow();
+            let parent_w_this = frame.frame_data.parent_w_this.clone();
+            let parent_dw_this = frame.frame_data.parent_dw_this.clone();
+            let parent_z_this = frame.frame_data.parent_z_this.clone();
+            let expected_parent_z_this = parent_w_this.transpose() * parent_dw_this;
+            assert_matrix_close(&parent_z_this, &expected_parent_z_this);
+        }
     }
 
     #[test]
